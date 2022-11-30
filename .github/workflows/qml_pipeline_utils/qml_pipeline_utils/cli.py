@@ -43,6 +43,11 @@ COMMON_CLI_FLAGS = {
         "required": False,
         "help": "The gallery directory name inside build-dir where sphinx puts all gallery demo html files",
     },
+    "worker-tasks-file-loc": {
+        "type": str,
+        "help": "The location of the worker tasks file containing files relevant for the current worker",
+        "required": True
+    }
 }
 
 
@@ -68,6 +73,12 @@ def cli_parser():
     add_flags_to_subparser(
         subparsers_build_strategy_matrix, "num-workers", "examples-dir", "glob-pattern"
     )
+    subparsers_build_strategy_matrix.add_argument(
+        "--sphinx-examples-execution-times-file",
+        help="The path to the JSON file containing all the execution times for the demos",
+        default=None,
+        required=False
+    )
 
     subparsers_remove_executable_code = subparsers.add_parser(
         "remove-executable-code-from-extraneous-demos",
@@ -75,9 +86,8 @@ def cli_parser():
     )
     add_flags_to_subparser(
         subparsers_remove_executable_code,
-        "num-workers",
+        "worker-tasks-file-loc",
         "examples-dir",
-        "offset",
         "dry-run",
         "verbose",
         "glob-pattern",
@@ -90,14 +100,12 @@ def cli_parser():
     )
     add_flags_to_subparser(
         subparsers_remove_html,
-        "num-workers",
+        "worker-tasks-file-loc",
         "build-dir",
         "examples-dir",
         "gallery-dir-name",
-        "offset",
         "dry-run",
-        "verbose",
-        "glob-pattern",
+        "verbose"
     )
     subparsers_remove_html.add_argument(
         "--preserve-non-sphinx-images",
@@ -138,15 +146,15 @@ def cli_parser():
             "kwargs": {
                 "num_workers": getattr(parser_results, "num_workers", None),
                 "sphinx_examples_dir": Path(getattr(parser_results, "examples_dir", "")),
+                "sphinx_examples_execution_times_file_loc": getattr(parser_results, "sphinx_examples_execution_times_file", None),
                 "glob_pattern": getattr(parser_results, "glob_pattern", None),
             },
         },
         "remove-executable-code-from-extraneous-demos": {
             "func": qml_pipeline_utils.services.remove_executable_code_from_extraneous_demos,
             "kwargs": {
-                "num_workers": getattr(parser_results, "num_workers", None),
+                "worker_tasks_file_loc": Path(getattr(parser_results, "worker_tasks_file_loc", "")),
                 "sphinx_examples_dir": Path(getattr(parser_results, "examples_dir", "")),
-                "offset": getattr(parser_results, "offset", None),
                 "dry_run": getattr(parser_results, "dry_run", None),
                 "verbose": getattr(parser_results, "verbose", None),
                 "glob_pattern": getattr(parser_results, "glob_pattern", None),
@@ -155,17 +163,15 @@ def cli_parser():
         "remove-extraneous-built-html-files": {
             "func": qml_pipeline_utils.services.remove_extraneous_built_html_files,
             "kwargs": {
-                "num_workers": getattr(parser_results, "num_workers", None),
+                "worker_tasks_file_loc": Path(getattr(parser_results, "worker_tasks_file_loc", "")),
                 "sphinx_build_directory": Path(getattr(parser_results, "build_dir", "")),
                 "sphinx_examples_dir": Path(getattr(parser_results, "examples_dir", "")),
                 "sphinx_gallery_dir_name": getattr(parser_results, "gallery_dir_name", None),
                 "preserve_non_sphinx_images": getattr(
                     parser_results, "preserve_non_sphinx_images", None
                 ),
-                "offset": getattr(parser_results, "offset", None),
                 "dry_run": getattr(parser_results, "dry_run", None),
-                "verbose": getattr(parser_results, "verbose", None),
-                "glob_pattern": getattr(parser_results, "glob_pattern", None),
+                "verbose": getattr(parser_results, "verbose", None)
             },
         },
         "clean-sitemap": {

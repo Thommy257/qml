@@ -33,16 +33,85 @@ jobs:
           cd .github/workflows/qml_pipeline_utils
           pip install .
 
-      - name: Generate Build Matrix
+      - name: Get Workflow Artifact target branch
+        id: workflow_target_branch
+        run: |
+          [[ "${{ github.ref_name }}" == "dev" || "${{ github.event.pull_request.base.ref }}" == "dev" ]] && name="dev" || name="master"
+          echo "name=$name" >> $GITHUB_OUTPUT
+
+      - name: Get Workflow run ID
+        id: workflow_run_id
+        uses: actions/github-script@v6
+        with:
+          result-encoding: string
+          script: |
+            const destWorkflowBranch = "${{ steps.workflow_target_branch.outputs.name }}";
+
+            try {
+              const workflowRuns = await github.rest.actions.listWorkflowRuns({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: `build-branch-${destWorkflowBranch}.yml`,
+                branch: 'master',
+                status: 'success',
+                exclude_pull_requests: true,
+                per_page: 1,
+                page: 1
+              });
+              const runData = workflowRuns.data.workflow_runs;
+              return (runData.length) ? runData[0].id : '';
+            } catch (e) {
+              console.log(`Unable to fetch workflow ID, error: ${e}`);
+              return '';
+            }
+
+      - name: Download Demo Execution run times
+        if: steps.workflow_run_id.outputs.result != ''
+        uses: XanaduAI/cloud-actions/download-github-workflow-artifact@main
+        with:
+          workflow_run_id: ${{ steps.workflow_run_id.outputs.result }}
+          artifact_name_regex: execution_times_${{ steps.workflow_target_branch.outputs.name }}
+          github_token: ${{ github.token }}
+
+      - name: Unpack execution times
+        if: steps.workflow_run_id.outputs.result != ''
+        run: |
+          unzip execution_times_${{ steps.workflow_target_branch.outputs.name }}
+          cat execution_times.json | jq
+
+      - name: Compute GitHub Strategy Matrix
         id: compute-strategy-matrix
         run: |
-          echo "strategy-matrix=$(qml_pipeline_utils \
+          WK_LOAD_ARTIFACT_NAME='worker_load'
+          WK_LOAD_FILE_NAME='worker_load.json'
+          
+          qml_pipeline_utils \
             build-strategy-matrix \
             --num-workers=${{ env.NUM_WORKERS }} \
-            --examples-dir='${{ github.workspace }}/demonstrations')" >> $GITHUB_OUTPUT
+            --examples-dir='${{ github.workspace }}/demonstrations' \
+            ${{ steps.workflow_run_id.outputs.result != '' 
+                 && format('--sphinx-examples-execution-times-file={0}/execution_times.json', github.workspace) 
+                 || '' }} > "$WK_LOAD_FILE_NAME"
+          
+          echo "worker_load_artifact_name=$WK_LOAD_ARTIFACT_NAME" >> $GITHUB_OUTPUT
+          echo "worker_load_file_name=$WK_LOAD_FILE_NAME" >> $GITHUB_OUTPUT
+          
+          cat "$WK_LOAD_FILE_NAME" | jq
+          
+          worker_count=$(jq -r '.workers | length' "$WK_LOAD_FILE_NAME")
+          matrix=$(python -c "print(list(range($worker_count)))")
+          echo "strategy-matrix=$matrix" >> $GITHUB_OUTPUT
+
+      - name: Upload worker load data as artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ steps.compute-strategy-matrix.outputs.worker_load_artifact_name }}
+          path: ${{ steps.compute-strategy-matrix.outputs.worker_load_file_name }}
 
     outputs:
       strategy-matrix: ${{ steps.compute-strategy-matrix.outputs.strategy-matrix }}
+      worker-load-file-name: ${{ steps.compute-strategy-matrix.outputs.worker_load_file_name }}
+      worker-load-artifact-name: ${{ steps.compute-strategy-matrix.outputs.worker_load_artifact_name }}
 
   build:
     runs-on: ubuntu-22.04
@@ -70,43 +139,67 @@ jobs:
           cd .github/workflows/qml_pipeline_utils
           pip install .
 
+      - name: Download worker load data
+        uses: actions/download-artifact@v3
+        with:
+          name: ${{ needs.compute-build-strategy-matrix.outputs.worker-load-artifact-name }}
+
+      - name: Extract Worker Tasks
+        id: worker_tasks
+        env:
+          worker_id: ${{ matrix.offset }}
+          worker_load_file_name: ${{ needs.compute-build-strategy-matrix.outputs.worker-load-file-name }}
+        run: |
+          WK_TASKS_FILE_NAME='worker_tasks.json'
+          jq .workers[${{ env.worker_id }}].tasks ${{ env.worker_load_file_name }} > "$WK_TASKS_FILE_NAME"
+          
+          cat "$WK_TASKS_FILE_NAME" | jq
+          
+          echo "file_name=$WK_TASKS_FILE_NAME" >> $GITHUB_OUTPUT 
+
       - name: Install Python Dependencies
         run: |
           pip install -r requirements.txt
           pip install --no-deps -r requirements_no_deps.txt
           pip install --upgrade pip 'setuptools<65' cmake
 
-      # Creates a temp file with current matrix information, which includes:
-      #  - Current offset
-      #  - Total Workers
-      #  - Metadata regarding the Python version and dependencies
-      #  - The name of files that will be executed by this worker
+      # Creates a temp yaml file with current environment information:
+      # ```
+      #  none: arbitrary value, we can change this to invalidate all previous caches if needed
+      #  num_workers: The total number of workers currently spawned
+      #  worker_id: The offset in the strategy matrix for the current worker
+      #  python.version: The version of python that was setup using actions/setup-python
+      #  python.hash.requirements-txt: The hash of the requirements.txt file
+      #  python.hash.requirements_no_deps-txt: The hash of the requirements_no_deps.txt file
+      # ```
       # The hash of this file is used as portion of the key in subsequent caching steps.
-      # This ensures that if the number of worker, tutorials, or python evironment details change,
+      # This ensures that if the values in this file change,
       # it will invalidate the previous cache and build fresh.
       - name: Set Matrix offset file
         run: |
-          cat >matrix_info.txt <<EOL
-          workers: ${{ env.NUM_WORKERS }}
-          offset: ${{ matrix.offset }}
-          ---
-          python_version: ${{ steps.setup_python.outputs.python-version }}
-          requirements: ${{ hashFiles('requirements.txt') }}
-          requirements_no_deps: ${{ hashFiles('requirements_no_deps.txt') }}
-          EOL
+          worker_files=$(jq [.[].name] worker_tasks.json | sed 's/^/  /')
+          cat >matrix_info.yaml <<EOL
+          nonce: a
           
-          qml_pipeline_utils \
-          show-worker-files \
-          --num-workers=${{ env.NUM_WORKERS }} \
-          --examples-dir="${{ github.workspace }}/demonstrations" \
-          --offset=${{ matrix.offset }} >> matrix_info.txt
+          num_workers: ${{ env.NUM_WORKERS }}
+          worker_id: ${{ matrix.offset }}
+          
+          python:
+            version: ${{ steps.setup_python.outputs.python-version }}
+            hash:
+              requirements-txt: ${{ hashFiles('requirements.txt') }}
+              requirements_no_deps-txt: ${{ hashFiles('requirements_no_deps.txt') }}
+          
+          worker_files: |
+          $worker_files
+          EOL
 
-          cat matrix_info.txt
+          cat matrix_info.yaml
 
       - name: Generate hash of the matrix file
         id: matrix_file
         run: |
-          echo "hash=${{ hashFiles('matrix_info.txt') }}" >> $GITHUB_OUTPUT
+          echo "hash=${{ hashFiles('matrix_info.yaml') }}" >> $GITHUB_OUTPUT
 
       - name: Install OS build dependencies
         run: |
@@ -118,9 +211,8 @@ jobs:
         run: |
           qml_pipeline_utils \
           remove-executable-code-from-extraneous-demos \
-          --num-workers=${{ env.NUM_WORKERS }} \
+          --worker-tasks-file-loc="${{ steps.worker_tasks.outputs.file_name }}" \
           --examples-dir="${{ github.workspace }}/demonstrations" \
-          --offset=${{ matrix.offset }} \
           --verbose
 
       - name: Gallery Cache
@@ -172,10 +264,9 @@ jobs:
         run: |
           qml_pipeline_utils \
           remove-extraneous-built-html-files \
-          --num-workers=${{ env.NUM_WORKERS }} \
+          --worker-tasks-file-loc="${{ steps.worker_tasks.outputs.file_name }}" \
           --build-dir="${{ github.workspace }}/_build/html" \
           --examples-dir="${{ github.workspace }}/demonstrations" \
-          --offset=${{ matrix.offset }} \
           --preserve-non-sphinx-images \
           --verbose
 
@@ -184,10 +275,9 @@ jobs:
         run: |
           qml_pipeline_utils \
           remove-extraneous-built-html-files \
-          --num-workers=${{ env.NUM_WORKERS }} \
+          --worker-tasks-file-loc="${{ steps.worker_tasks.outputs.file_name }}" \
           --build-dir="${{ github.workspace }}/_build/html" \
           --examples-dir="${{ github.workspace }}/demonstrations" \
-          --offset=${{ matrix.offset }} \
           --verbose
 
       - name: Upload Html
