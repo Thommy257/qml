@@ -33,14 +33,28 @@ jobs:
           cd .github/workflows/qml_pipeline_utils
           pip install .
 
+      # Optimization for pull requests. Instead of pulling the execution times on each synchronize,
+      # only pull first time, this ensures the same set of demos always land on the same workers,
+      # providing a boosted build time for subsequent runs.
+      - name: Executions Time
+        id: execution_time_cache
+        if: github.event_name == 'pull_request'
+        uses: actions/cache@v3
+        with:
+          path: execution_times.json
+          key: execution_times-${{ github.ref_name }}
+
+
       - name: Get Workflow Artifact target branch
         id: workflow_target_branch
+        if: steps.execution_time_cache.outputs.cache-hit != 'true'
         run: |
           [[ "${{ github.ref_name }}" == "dev" || "${{ github.event.pull_request.base.ref }}" == "dev" ]] && name="dev" || name="master"
           echo "name=$name" >> $GITHUB_OUTPUT
 
       - name: Get Workflow run ID
         id: workflow_run_id
+        if: steps.execution_time_cache.outputs.cache-hit != 'true'
         uses: actions/github-script@v6
         with:
           result-encoding: string
@@ -66,7 +80,7 @@ jobs:
             }
 
       - name: Download Demo Execution run times
-        if: steps.workflow_run_id.outputs.result != ''
+        if: steps.workflow_run_id.outputs.result != '' && steps.execution_time_cache.outputs.cache-hit != 'true'
         uses: XanaduAI/cloud-actions/download-github-workflow-artifact@main
         with:
           workflow_run_id: ${{ steps.workflow_run_id.outputs.result }}
@@ -74,7 +88,7 @@ jobs:
           github_token: ${{ github.token }}
 
       - name: Unpack execution times
-        if: steps.workflow_run_id.outputs.result != ''
+        if: steps.workflow_run_id.outputs.result != '' && steps.execution_time_cache.outputs.cache-hit != 'true'
         run: |
           unzip execution_times_${{ steps.workflow_target_branch.outputs.name }}
           cat execution_times.json | jq
