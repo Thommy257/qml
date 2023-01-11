@@ -163,6 +163,12 @@ in quantum neural networks.
     :description: :doc:`demos/tutorial_barren_gadgets`
     :tags: optimization barren plateaus
 
+.. gallery-item::
+    :tooltip: Estimate gradient with Constant Scaling for Hybrid Quantum Models
+    :figure: demonstrations/barren_gadgets/thumbnail_tutorial_barren_gadgets.svg
+    :description: :doc:`demos/tutorial_constant_scaling_quantum_gradient_estimation`
+    :tags: spsb gradient estimation
+
 :html:`</div></div><div style='clear:both'>`
 
 
