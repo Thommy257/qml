@@ -39,8 +39,13 @@ A short intro to Automatic Differentiation (AD)
 -----------------------------------------------
 
 (Following [#SPSB2022]_ closely). Consider a simple chained function :math:`y = f(u(x))` where :math:`x\in \mathbb{R}^p`,
-:math:`u: \mathbb{R}^p\rightarrow\mathbb{R}^m` and :math:`f: \mathbb{R}^m\rightarrow\mathbb{R}^n`. We are interested in
-computing the derivative :math:`\frac{\partial y}{\partial x}` using the AD backwards pass. We start by initialising an
+:math:`u: \mathbb{R}^p\rightarrow\mathbb{R}^m` and :math:`f: \mathbb{R}^m\rightarrow\mathbb{R}^n`. 
+
+.. figure:: ../demonstrations/data_reuploading/backprop.png
+   :scale: 65%
+   :alt: backprop figure
+
+We are interested in computing the derivative :math:`\frac{\partial y}{\partial x}` using the AD backwards pass. We start by initialising an
 *upstream* vector of size :math:`\mathbb{R}^n` filled with ones. We now continue by calculating :math:`\partial y / \partial u`,
 which is given by:
 
