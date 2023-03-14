@@ -18,13 +18,13 @@ Background
 To optimise a machine learning (ML) model, we need to determine the gradients of a loss function
 with respect to all parameters in the model. While this is a simple task for classical models, where we
 can leverage the auto diff tools embedded in libraries like PyTorch or Jax, this is not a trivial task for
-quantum ML models that rely on `Parametrized Quantum Circuits` (PQCs). To determine the gradients of a loss
+quantum ML models which rely on `Parametrized Quantum Circuits` (PQCs). To determine the gradients of a loss
 function with respect to the circuit parameters, we are bound to numerical methods like the parameter-shift rule
 or a finite-differences method. However, the computational cost of those methods scales linearly with the number of
 circuit parameters, making them expensive for large models.
 
 On the other hand, a well-established method for a black-box optimisation method for noisy and expensive objective
-functions exists, namely the Simultaneous perturbation stochastic approximation (SPSA) algorithm [#SPSA1987]_. SPSA
+functions exists, namely the Simultaneous Perturbation Stochastic Approximation (SPSA) algorithm [#SPSA1987]_. SPSA
 perturbs all parameters simultaneously in order to calculate an estimator of the gradient used for optimisation.
 
 While SPSA can be used to optimize the objective of a purely quantum ML model (see `here
@@ -33,14 +33,14 @@ for hybrid models as we lose the benefit of having access to the analytic gradie
 computational graph.
 
 Hence, the goal of the following tutorial is to walk through the process of applying the multi-variate SPSA algorithm
-to PQCs, to estimate Jacobians that can be hooked to the auto-diff graph of PennyLane's ML backends (PyTorch, Jax etc.).
+to PQCs to estimate Jacobians which can be hooked to the auto-diff graph of PennyLane's ML backends (PyTorch, Jax etc.).
 
 A short intro to Automatic Differentiation (AD)
 -----------------------------------------------
 
 (Following [#SPSB2022]_ closely). Consider a simple chained function :math:`y = f(u(x))` where :math:`x\in \mathbb{R}^p`,
 :math:`u: \mathbb{R}^p\rightarrow\mathbb{R}^m` and :math:`f: \mathbb{R}^m\rightarrow\mathbb{R}^n`. We are interested in
-computing the derivative :math:`\frac{\partial y}{\partial x}` using the AD backward pass. We start by initialising an
+computing the derivative :math:`\frac{\partial y}{\partial x}` using the AD backwards pass. We start by initialising an
 *upstream* vector of size :math:`\mathbb{R}^n` filled with ones. We now continue by calculating :math:`\partial y / \partial u`,
 which is given by:
 
@@ -62,8 +62,8 @@ where :math:`\partial u / \partial x` is the Jacobian :math:`\mathbf{J}_u` with 
 We can repeat this procedure for an arbitrary number of inner functions and, most importantly, decompose any differentiable
 function :math:`y=f(x)` into a chain of elementary operations whose derivatives we know exactly. However, while reverse-mode AD
 is suitable for *classical computations*, it is not possible to backpropagate through *quantum circuits* in the same way as we don't
-have access to the upstream variable due to the unobservable nature of the intermediate quantum states. Therefore, we need to
-estimate the Jacobians of the quantum parts in our model using numerical methods. This is where SPSB comes into play.
+have access to the upstream variable due to the unobservable nature of the intermediate quantum states. We therefore need to
+estimate the Jacobians of the quantum parts of our model using numerical methods. This is where SPSB comes into play.
 
 From SPSA to SPSB
 -----------------
