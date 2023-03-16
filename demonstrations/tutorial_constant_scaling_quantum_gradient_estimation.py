@@ -41,8 +41,9 @@ A short intro to Automatic Differentiation (AD)
 (Following [#SPSB2022]_ closely). Consider a simple chained function :math:`y = f(u(x))` where :math:`x\in \mathbb{R}^p`,
 :math:`u: \mathbb{R}^p\rightarrow\mathbb{R}^m` and :math:`f: \mathbb{R}^m\rightarrow\mathbb{R}^n`. 
 
-.. figure:: ../demonstrations/data_reuploading/backprop.png
-   :scale: 65%
+.. figure:: ../demonstrations/constant_scaling_quantum_gradient_estimation/backprop.png
+   :align: center
+   :scale: 50%
    :alt: backprop figure
 
 We are interested in computing the derivative :math:`\frac{\partial y}{\partial x}` using the AD backwards pass. We start by initialising an
@@ -115,9 +116,235 @@ the overhead is still independent of the number of function parameters :math:`n`
 
 Optimisation of QCNN model
 --------------------------
-
-
 """
+import torch
+from torch import nn
+
+import numpy as np
+import pennylane as qml
+from torchvision import datasets, transforms
+from tqdm import trange
+
+##############################################################################
+# Define hyperparameters
+# ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+N_SAMPLES = 1000
+N_QUBITS = 4
+N_LAYERS = 1
+BATCH_SIZE = 50
+N_EPOCHS = 8
+LEARNING_RATE = 0.01
+DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+
+
+##############################################################################
+# Fetch and preprocess MNIST data
+# ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+transform = transforms.Compose(
+    [
+        transforms.ToTensor(),
+        transforms.Resize((4, 4), antialias=None),
+        transforms.Normalize((0.1307,), (0.3081,)),
+    ]
+)
+mnist = datasets.MNIST("./data", train=True, download=True, transform=transform)
+
+# Get only 6s and 3s
+idx = np.where((mnist.targets == 6) | (mnist.targets == 3))[0]
+mnist.data = mnist.data[idx]
+mnist.targets = mnist.targets[idx]
+
+# Limit to N_SAMPLES
+mnist.data = mnist.data[:N_SAMPLES]
+mnist.targets = mnist.targets[:N_SAMPLES]
+
+# Change labels to 0 and 1
+mnist.targets[mnist.targets == 6] = 0
+mnist.targets[mnist.targets == 3] = 1
+
+##############################################################################
+# Define circuit
+# ^^^^^^^^^^
+
+dev = qml.device("default.qubit", wires=N_QUBITS)
+
+
+def get_circuit(differentiator):
+    @qml.qnode(dev, diff_method=differentiator, interface="torch")
+    def circuit(inputs, weights):
+
+        # Encoding
+        for i in range(N_QUBITS):
+            qml.RY(inputs[i], wires=i)
+
+        # Classifier
+        for l in range(N_LAYERS):
+            layer_params = weights[N_QUBITS * l : N_QUBITS * (l + 1)]
+            for i in range(N_QUBITS):
+                qml.CRZ(layer_params[i], wires=[i, (i + 1) % N_QUBITS])
+            for i in range(N_QUBITS):
+                qml.Hadamard(wires=i)
+
+        return [qml.expval(qml.PauliZ(i)) for i in range(N_QUBITS)]
+
+    return circuit
+
+
+##############################################################################
+# Define torch model
+# ^^^^^^^^^^
+
+
+class Model(nn.Module):
+    def __init__(self, differentiator, n_wires, n_layers) -> None:
+        super().__init__()
+        weight_shapes = {"weights": (n_layers * n_wires,)}
+
+        circuit = get_circuit(differentiator)
+        self.quanv = qml.qnn.TorchLayer(circuit, weight_shapes)
+
+        self.flatten = nn.Flatten(start_dim=1)
+        self.linear = nn.Linear(N_QUBITS * 2 * 2, 2)
+        self.softmax = nn.Softmax(dim=1)
+        self.final = nn.Sequential(self.flatten, self.linear, self.softmax)
+
+    def forward(self, x):
+
+        bs = x.shape[0]
+        img_size = x.shape[1]
+
+        all_circuit_outs = []
+
+        for j in range(0, img_size, 2):
+            for k in range(0, img_size, 2):
+                image_portion = torch.cat(
+                    (
+                        x[:, j, k],
+                        x[:, j, k + 1],
+                        x[:, j + 1, k],
+                        x[:, j + 1, k + 1],
+                    )
+                )
+
+                data = torch.transpose(image_portion.view(4, bs), 0, 1)
+
+                circuit_outs = self.quanv(data)
+                all_circuit_outs.append(circuit_outs)
+
+        x = torch.cat(all_circuit_outs, dim=1).float()
+        x = self.final(x)
+        return x
+
+
+##############################################################################
+# Define training loop
+# ^^^^^^^^^^
+
+
+def get_losses(differentiator):
+
+    trainloader = torch.utils.data.DataLoader(
+        mnist, batch_size=BATCH_SIZE, shuffle=True
+    )
+
+    model = Model(differentiator, N_QUBITS, N_LAYERS)
+    model.to(DEVICE)
+
+    opt = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    loss = nn.CrossEntropyLoss()
+
+    # Initial evaluation
+    initial_loss = 0.0
+    initial_acc = 0.0
+
+    for batch_idx, (data, target) in enumerate(trainloader):
+        data = data.squeeze().to(DEVICE)
+        target = target.to(DEVICE)
+        output = model(data)
+        l = loss(output, target)
+        initial_loss += l.item()
+        initial_acc += output.argmax(dim=1).eq(target).sum().item()
+
+    initial_loss /= len(trainloader)
+    initial_acc /= len(trainloader)
+
+    losses = [initial_loss]
+    avg_accs = [initial_acc]
+
+    # Circuit evaluations
+    init_circuit_evals = dev.num_executions
+    circuit_evals = [0]
+
+    # Training loop
+    for epoch in trange(N_EPOCHS, desc="Epochs"):
+        running_acc = 0
+        for batch_idx, (data, target) in enumerate(trainloader):
+            data = data.squeeze().to(DEVICE)
+            target = target.to(DEVICE)
+            output = model(data)
+
+            l = loss(output, target)
+            losses.append(l.item())
+
+            opt.zero_grad()
+            l.backward()
+            opt.step()
+
+            accuracy = output.argmax(dim=1).eq(target).sum().item()
+            running_acc += accuracy * len(target)
+            circuit_evals.append(dev.num_executions - init_circuit_evals)
+
+        avg_accs.append(running_acc / len(trainloader.dataset))
+
+    return losses, avg_accs, circuit_evals
+
+
+##############################################################################
+# Run training loop and plot data
+# --------------------------
+
+differentiators = ["spsa", "parameter-shift"]
+losses = []
+accs = []
+circuit_evals = []
+
+for differentiator in differentiators:
+    loss, acc, circuit_eval = get_losses(differentiator)
+    losses.append(loss)
+    accs.append(acc)
+    circuit_evals.append(circuit_eval)
+
+
+##############################################################################
+# Define rolling average for plotting
+# ^^^^^^^^^^
+
+def rolling_avg(data, window_size):
+    convolution = np.convolve(data, np.ones(window_size,)/window_size, "valid")
+    return np.append(data[: window_size - 1], convolution)
+
+##############################################################################
+# Plot losses and accuracies
+# ^^^^^^^^^^
+from matplotlib import pyplot as plt
+
+fig, ax = plt.subplots(figsize=(10, 6))
+ax2 = ax.twinx()
+
+window_sizes = {"spsa": 10, "parameter-shift": 3}
+
+for i, d in enumerate(differentiators):
+    rolling_loss = rolling_avg(losses[i], window_sizes[d])
+    rolling_acc = rolling_avg(accs[i], window_sizes[d])
+
+    ax.plot(circuit_evals[i], rolling_loss, label=f"{d} loss")
+    ax2.plot(circuit_evals[i], rolling_acc, label=f"{d} accuracy")
+
+ax.set_xlabel("Circuit Evaluations")
+ax.set_ylabel("Loss")
+ax2.set_ylabel("Accuracy")
+ax.legend()
 
 
 ######################################################################
