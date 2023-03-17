@@ -43,7 +43,7 @@ A short intro to Automatic Differentiation (AD)
 
 .. figure:: ../demonstrations/constant_scaling_quantum_gradient_estimation/backprop.png
    :align: center
-   :scale: 50%
+   :scale: 30%
    :alt: backprop figure
 
 We are interested in computing the derivative :math:`\frac{\partial y}{\partial x}` using the AD backwards pass. We start by initialising an
@@ -132,7 +132,7 @@ N_SAMPLES = 1000
 N_QUBITS = 4
 N_LAYERS = 1
 BATCH_SIZE = 50
-N_EPOCHS = 8
+N_EPOCHS = 2
 LEARNING_RATE = 0.01
 DEVICE = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
@@ -275,6 +275,7 @@ def get_losses(differentiator):
     # Circuit evaluations
     init_circuit_evals = dev.num_executions
     circuit_evals = [0]
+    circuit_evals_accs = [0]
 
     # Training loop
     for epoch in trange(N_EPOCHS, desc="Epochs"):
@@ -296,8 +297,9 @@ def get_losses(differentiator):
             circuit_evals.append(dev.num_executions - init_circuit_evals)
 
         avg_accs.append(running_acc / len(trainloader.dataset))
+        circuit_evals_accs.append(dev.num_executions - init_circuit_evals)
 
-    return losses, avg_accs, circuit_evals
+    return losses, avg_accs, circuit_evals, circuit_evals_accs
 
 
 ##############################################################################
@@ -308,12 +310,14 @@ differentiators = ["spsa", "parameter-shift"]
 losses = []
 accs = []
 circuit_evals = []
+circuit_evals_accs = []
 
 for differentiator in differentiators:
-    loss, acc, circuit_eval = get_losses(differentiator)
+    loss, acc, circuit_eval, circuit_eval_accs = get_losses(differentiator)
     losses.append(loss)
     accs.append(acc)
     circuit_evals.append(circuit_eval)
+    circuit_evals_accs.append(circuit_eval_accs)
 
 
 ##############################################################################
@@ -336,16 +340,14 @@ window_sizes = {"spsa": 10, "parameter-shift": 3}
 
 for i, d in enumerate(differentiators):
     rolling_loss = rolling_avg(losses[i], window_sizes[d])
-    rolling_acc = rolling_avg(accs[i], window_sizes[d])
 
     ax.plot(circuit_evals[i], rolling_loss, label=f"{d} loss")
-    ax2.plot(circuit_evals[i], rolling_acc, label=f"{d} accuracy")
+    ax2.plot(circuit_evals_accs[i], accs[i], label=f"{d} accuracy")
 
 ax.set_xlabel("Circuit Evaluations")
 ax.set_ylabel("Loss")
 ax2.set_ylabel("Accuracy")
 ax.legend()
-
 
 ######################################################################
 # References
